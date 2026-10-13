@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>{{.Title}} — {{.Firm.Name}}</title>
+<style>
+  /* ============================================================
+     Offybox ERP — A4 Indian GST document (Invoice / Order /
+     Quotation / Return). Single master template.
+
+     IMPORTANT: this is rendered by wkhtmltopdf (old Qt WebKit),
+     which has no CSS grid/flex support. All layout is done with
+     <table>. Background colours print by default (do NOT pass
+     --no-background to wkhtmltopdf).
+     ============================================================ */
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    background: #ffffff;
+    font-family: "Helvetica Neue", Arial, "Segoe UI", sans-serif;
+    color: #111111;
+    font-size: 10px;
+  }
+
+  .sheet { position: relative; width: 100%; }
+
+  /* Full-page layout: the spacer row grows so the bottom section (bank /
+     amount-in-words / totals / signatures) is pinned to the bottom of the page
+     even when there is a single line item. wkhtmltopdf (Qt-WebKit) has no flex,
+     so this uses table row-height distribution, which it supports. The page
+     table height is a fixed ~A4 printable height (acts as a MINIMUM, so longer
+     item lists still grow and flow to extra pages); kept a few mm under the
+     real printable area (297 − 10 top − 8 bottom margins) to avoid spilling a
+     blank second page. */
+  table.page { width: 100%; height: 270mm; border-collapse: collapse; position: relative; z-index: 1; }
+  td.page-top { vertical-align: top; }
+  /* Side rails through the empty spacer so the document's left/right edges stay
+     continuous (complete rectangle) between the items table and the pinned
+     bottom block. */
+  td.page-spacer { height: 100%; border-left: 1.5px solid #000000; border-right: 1.5px solid #000000; }
+  td.page-bottom { vertical-align: bottom; }
+
+  /* ---- Watermark (diagonal, large, faint) ---- */
+  .watermark {
+    position: absolute;
+    top: 50%; left: 0; right: 0;
+    text-align: center;
+    transform: translateY(-50%) rotate(-32deg);
+    -webkit-transform: translateY(-50%) rotate(-32deg);
+    font-size: 120pt;
+    font-weight: 800;
+    letter-spacing: 6px;
+    color: #14692f;
+    opacity: 0.05;
+    white-space: nowrap;
+    text-transform: uppercase;
+    z-index: 0;
+  }
+
+  /* width helper tables reset */
+  table { border-collapse: collapse; }
+
+  /* ============================== HEADER ============================== */
+  .tax-tag {
+    text-align: center;
+    font-size: 11px;
+    letter-spacing: 3px;
+    color: #000000;
+    font-weight: 700;
+    text-transform: uppercase;
+    padding-bottom: 4px;
+  }
+  table.top-bar { width: 100%; }
+  table.top-bar td { vertical-align: top; }
+  /* Header is a full-width bordered band: left 20% IDs, center 60% brand,
+     right 20% intentionally empty for visual balance. */
+  table.top-bar { border: 1.5px solid #000000; }
+  table.top-bar td { padding: 6px 9px; vertical-align: top; }
+  td.reg-ids { width: 20%; font-size: 11px; color: #555555; line-height: 1.5; }
+  td.reg-ids b { color: #2a2a2a; font-weight: 700; }
+  td.reg-ids .addr-left { margin-top: 5px; color: #444444; font-size: 13px; line-height: 1.55; }
+
+  td.brand { width: 60%; text-align: center; vertical-align: middle; }
+  .brand .logo-img { max-height: 100px; max-width: 130px; margin: 0 auto 3px; display: block; }
+  .brand h1 { font-size: 24px; font-weight: 800; color: #2e7d32; letter-spacing: .5px; line-height: 1.1; }
+  .brand .trade { font-size: 14px; color: #555555; margin-top: 2px; }
+
+  td.copy-label { width: 20%; }
+
+  /* ---- Section 2 · Company contact (bordered, centered) ---- */
+  .company-contact {
+    border: 1.5px solid #000000; border-top: none;
+    text-align: center; padding: 6px 12px;
+    font-size: 12px; color: #2a2a2a;
+  }
+  .company-contact .contact-row span { margin: 0 14px; }
+  .company-contact .contact-row b { color: #14692f; }
+
+  /* ============================== DOC INFO ============================== */
+  table.doc-info { width: 100%; table-layout: fixed; border-collapse: collapse; }
+  table.doc-info td { width: 16.66%; padding: 7px 9px; vertical-align: top; }
+  table.doc-info td.cell { border: 1.5px solid #000000; border-top: none; }
+  /* Empty trailing grids keep their bottom/side borders for a complete rectangle. */
+  .doc-info .k { color: #6b6b6b; font-size: 11px; text-transform: uppercase; letter-spacing: .3px; line-height: 1.2; }
+  .doc-info .v { font-weight: 700; color: #111; font-size: 13px; margin-top: 3px; white-space: nowrap; }
+
+  /* ============================== PARTIES ============================== */
+  table.parties { width: 100%; border: 1.5px solid #000000; border-top: none; table-layout: fixed; }
+  table.parties td { width: 50%; padding: 9px 12px; font-size: 12px; line-height: 1.6; vertical-align: top; }
+  table.parties td.right { border-left: 1.5px solid #000000; }
+  .party .head {
+    font-size: 12px; font-weight: 700; color: #fff;
+    background: #14692f;
+    display: inline-block; padding: 3px 12px; border-radius: 3px;
+    letter-spacing: .5px; margin-bottom: 6px; text-transform: uppercase;
+  }
+  .party .name { font-weight: 800; font-size: 15px; color: #111; margin-bottom: 3px; }
+  .party .meta { color: #2a2a2a; }
+  .party .gst { margin-top: 4px; font-size: 12px; }
+  .party .gst b { color: #14692f; }
+
+  /* ============================== ITEMS TABLE ============================== */
+  table.items { width: 100%; border: 1.5px solid #000000; }
+  table.items thead th {
+    background: #2e7d32;
+    color: #fff;
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: .3px;
+    text-transform: uppercase;
+    padding: 10px 7px;
+    border: 1.5px solid #000000;
+    text-align: center;
+    line-height: 1.25;
+  }
+  table.items tbody td {
+    font-size: 13px;
+    padding: 8px 7px;
+    border: 1.5px solid #000000;
+    color: #2a2a2a;
+    height: 32px;
+  }
+  table.items tbody td b { font-size: 15px; color: #111; font-weight: 600; }
+  table.items tbody tr.alt td { background: #f4f6f4; }
+
+  /* ============================== BOTTOM ============================== */
+  table.bottom { width: 100%; border: 1.5px solid #000000; border-top: none; table-layout: fixed; page-break-inside: avoid; }
+  table.bottom > tbody > tr > td { vertical-align: top; }
+  td.bottom-left { width: 60%; padding: 8px 10px; border-right: 1.5px solid #000000; }
+  td.bottom-right { width: 40%; padding: 0; }
+
+  .bank h4 { font-size: 11px; font-weight: 700; color: #14692f; text-transform: uppercase; letter-spacing: .6px; margin-bottom: 5px; }
+  table.bankt { width: 100%; font-size: 10px; }
+  table.bankt td { padding: 2.5px 0; }
+  table.bankt td.k { color: #6b6b6b; width: 40%; }
+  table.bankt td.v { font-weight: 700; color: #111; }
+
+  .words-band {
+    margin-top: 8px;
+    background: #d7f0df;
+    border: 1px solid #cdeed8;
+    border-left: 4px solid #1b7a3a;
+    border-radius: 3px;
+    padding: 6px 10px;
+  }
+  .words-band .k { font-size: 8px; color: #14692f; text-transform: uppercase; letter-spacing: .5px; }
+  .words-band .v { font-size: 10.5px; font-weight: 700; color: #0c3b1e; margin-top: 1px; }
+
+  /* ---- Totals ----
+     The totals fill the full right cell (height:100%) so the green TOTAL row is
+     pinned to the bottom and ends level with the Bank Details side, sharing the
+     same outer rectangle (table.bottom border + bottom-left border-right). Row
+     separators are solid black and span the full cell width so they meet the
+     side borders — no faint/disconnected look. A growing spacer row absorbs any
+     height difference between the bank side and the totals list. */
+  table.totals { width: 100%; height: 100%; border-collapse: collapse; }
+  table.totals td { font-size: 15px; padding: 8px 13px; height: 28px; border-bottom: 1.5px solid #000000; line-height: 1.35; }
+  table.totals td.k { color: #2a2a2a; }
+  table.totals td.v { text-align: right; font-weight: 700; }
+  /* Blank filler between the totals list and the pinned TOTAL row. */
+  table.totals tr.tspacer td { height: 100%; padding: 0; border-bottom: none; }
+  table.totals tr.grand td {
+    background: #d6f0dd;
+    font-weight: 800;
+    font-size: 21px;
+    color: #0c3b1e;
+    border-top: 2px solid #000000;
+    border-bottom: none;
+    padding: 12px 13px;
+  }
+
+  /* ============================== FOOTER ============================== */
+  table.signs { width: 100%; border: 1.5px solid #000000; border-top: none; text-align: center; table-layout: fixed; page-break-inside: avoid; }
+  table.signs td { width: 33.33%; height: 100px; padding: 10px 8px 8px; vertical-align: bottom; }
+  table.signs td.mid, table.signs td.last { border-left: 1.5px solid #000000; }
+  .signs .sline { height: 54px; }
+  /* Authorised-signatory image — transparent PNG from tenant settings, sized
+     and centered like the header logo (no background box). */
+  .signs .sign-img { display: block; margin: 1px auto 0; max-height: 52px; max-width: 180px; }
+  .signs .srole { font-size: 13px; font-weight: 700; color: #2a2a2a; border-top: 1px solid #9aa39c; padding-top: 6px; }
+  .signs .for { font-size: 11px; color: #6b6b6b; }
+  .signs .firm-name { font-size: 13px; font-weight: 800; color: #14692f; }
+
+  /* Terms now live in the bottom-left cell (under Amount in Words), so no own border. */
+  .terms { margin-top: 8px; padding-top: 6px; border-top: 1px solid #cccccc; font-size: 11px; color: #555; line-height: 1.55; }
+  .terms h5 { font-size: 13px; color: #2a2a2a; text-transform: uppercase; letter-spacing: .5px; margin-bottom: 4px; }
+  .terms ol { margin-left: 16px; }
+
+  .doc-foot {
+    margin-top: 6px;
+    text-align: center;
+    font-size: 7.5px;
+    color: #8a8a8a;
+    border-top: 1px dashed #cfcfcf;
+    padding-top: 4px;
+  }
+  .doc-foot b { color: #14692f; }
+</style>
+</head>
+<body>
+
+<div class="sheet">
+  <div class="watermark">{{.Firm.Name}}</div>
+
+  <table class="page">
+    <tr><td class="page-top">
+    <div class="tax-tag">{{.Title}}</div>
+
+    <table class="top-bar">
+      <tr>
+        <td class="reg-ids">
+          {{if .Firm.GSTIN}}<div><b>GSTIN:</b> {{.Firm.GSTIN}}</div>{{end}}
+          {{if .Firm.PAN}}<div><b>PAN:</b> {{.Firm.PAN}}</div>{{end}}
+          {{if .Firm.RegOffice}}<div class="addr-left">{{range .Firm.RegOffice}}{{.}}<br />{{end}}</div>{{end}}
+        </td>
+        <td class="brand">
+          {{if .Firm.LogoImg}}<img class="logo-img" src="{{.Firm.LogoImg}}" alt="" />{{end}}
+          <h1>{{.Firm.Name}}</h1>
+          {{if .Firm.TradeName}}<div class="trade">{{.Firm.TradeName}}</div>{{end}}
+        </td>
+        <td class="copy-label"></td>
+      </tr>
+    </table>
+
+    <div class="company-contact">
+      <div class="contact-row">
+        {{if .Firm.Mobile}}<span><b>Phone:</b> {{.Firm.Mobile}}</span>{{end}}
+        {{if .Firm.Email}}<span><b>Email:</b> {{.Firm.Email}}</span>{{end}}
+      </div>
+    </div>
+
+    <table class="doc-info">
+      <colgroup>
+        <col style="width:13%" /><col style="width:25%" /><col style="width:14%" /><col style="width:14%" /><col style="width:17%" /><col style="width:17%" />
+      </colgroup>
+      <tr>
+        {{range .Info}}<td class="cell"><div class="k">{{.K}}</div><div class="v">{{if .V}}{{.V}}{{else}}—{{end}}</div></td>{{end}}
+        <td class="cell"></td>
+        <td class="cell"></td>
+      </tr>
+    </table>
+
+    <table class="parties">
+      <tr>
+        <td class="party"{{if not .ShowShipping}} colspan="2"{{end}}>
+          <div class="head">{{.Billing.Heading}}</div>
+          <div class="name">{{.Billing.Name}}</div>
+          {{range .Billing.Lines}}<div class="meta">{{.}}</div>{{end}}
+          {{if .Billing.Mobile}}<div class="meta">Mobile: {{.Billing.Mobile}}</div>{{end}}
+          {{if .Billing.GSTIN}}<div class="gst"><b>GSTIN:</b> {{.Billing.GSTIN}}{{if .Billing.StateCode}} &nbsp;|&nbsp; <b>State Code:</b> {{.Billing.StateCode}}{{end}}</div>{{end}}
+        </td>
+        {{if .ShowShipping}}
+        <td class="party right">
+          <div class="head">{{.Shipping.Heading}}</div>
+          <div class="name">{{.Shipping.Name}}</div>
+          {{range .Shipping.Lines}}<div class="meta">{{.}}</div>{{end}}
+          {{if .Shipping.Mobile}}<div class="meta">Mobile: {{.Shipping.Mobile}}</div>{{end}}
+          {{if .Shipping.GSTIN}}<div class="gst"><b>GSTIN:</b> {{.Shipping.GSTIN}}{{if .Shipping.StateCode}} &nbsp;|&nbsp; <b>State Code:</b> {{.Shipping.StateCode}}{{end}}</div>{{end}}
+        </td>
+        {{end}}
+      </tr>
+    </table>
+
+    <table class="items">
+      <thead>
+        <tr>
+          {{range .Columns}}<th style="width:{{.Width}}; text-align:{{.Align}}">{{.Header}}</th>{{end}}
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Rows}}
+        <tr{{if .Alt}} class="alt"{{end}}>
+          {{range .Cells}}<td style="text-align:{{.Align}}">{{if .Bold}}<b>{{.Value}}</b>{{else}}{{.Value}}{{end}}</td>{{end}}
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    </td></tr>
+    <tr><td class="page-spacer"></td></tr>
+    <tr><td class="page-bottom">
+
+    <table class="bottom">
+      <tr>
+        <td class="bottom-left">
+          {{if .HasBank}}
+          <div class="bank">
+            <h4>Bank Details</h4>
+            <table class="bankt">
+              {{range .Bank}}<tr><td class="k">{{.K}}</td><td class="v">: {{.V}}</td></tr>{{end}}
+            </table>
+          </div>
+          {{end}}
+
+          <div class="words-band">
+            <div class="k">Amount in Words</div>
+            <div class="v">{{.AmountWords}}</div>
+          </div>
+
+          {{if .HasTerms}}
+          <div class="terms">
+            <h5>Terms &amp; Conditions</h5>
+            <ol>
+              {{range .Terms}}<li>{{.}}</li>{{end}}
+            </ol>
+          </div>
+          {{end}}
+        </td>
+
+        <td class="bottom-right">
+          <table class="totals">
+            {{range .Totals}}<tr><td class="k">{{.K}}</td><td class="v">{{.V}}</td></tr>{{end}}
+            <tr class="tspacer"><td colspan="2"></td></tr>
+            <tr class="grand"><td class="k">TOTAL</td><td class="v">{{.GrandTotal}}</td></tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+
+    <table class="signs">
+      <tr>
+        <td>
+          <div class="sline"></div>
+          <div class="srole">Checked By</div>
+        </td>
+        <td class="mid">
+          <div class="sline"></div>
+          <div class="srole">Verified By</div>
+        </td>
+        <td class="last">
+          <div class="for">For {{.Firm.Name}}</div>
+          <div class="firm-name">{{.Firm.Name}}</div>
+          <div class="sline">{{if .SignatureImg}}<img class="sign-img" src="{{.SignatureImg}}" alt="" />{{end}}</div>
+          <div class="srole">Authorised Signatory</div>
+        </td>
+      </tr>
+    </table>
+    </td></tr>
+  </table>
+</div>
+
+</body>
+</html>
